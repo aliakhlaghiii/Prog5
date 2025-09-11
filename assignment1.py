@@ -27,4 +27,6 @@ def main():
     approx_ans = trapezoid(f, args.a, args.b, args.n)
     error = abs(exact_ans - approx_ans)
     print(f'{args.n}, {error:.3f}')
-        
+
+if __name__ == '__main__':
+    main()
