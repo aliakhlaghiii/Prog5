@@ -19,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description='Trapezoid model')
     parser.add_argument('-a', type=float, required=True, help='lower bound')
     parser.add_argument('-b', type=float, required=True, help='upper bound')
-    parser.add_argument('-n', type=float, required=True, help='number of steps')
+    parser.add_argument('-n', type=int, required=True, help='number of steps')
     args = parser.parse_args()
     
     f = math.cos
