@@ -24,7 +24,7 @@ B=1.5707   # ~ pi/2(radian)
 echo "n,error" > results.csv
 
 # List of n values to test
-Ns=(500 750 1000)
+Ns=(2 10 100 200 500 750 1000)
 
 for n in "${Ns[@]}"; 
 do
