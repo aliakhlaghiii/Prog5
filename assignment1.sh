@@ -33,4 +33,4 @@ do
   echo "$line" >> results.csv
 done
 
-echo "Done. Results saved to results.csv)"
+echo "Done. Results saved to results.csv"
