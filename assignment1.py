@@ -1,32 +1,53 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
+"""Trapezoidal integration script.
+
+This script approximates the integral of cos(x) over a given interval
+using the trapezoidal rule, and compares the result with the exact
+value of the integral.
+"""
+
 import math
-import sys
 import argparse
 
-def trapezoid(f, a, b, n=256):
-    ''' function to implement integration based on lower bound (a),
-    upper bound(b) and number of steps(n)'''
-    
-    h = (b - a) / n  
-    I = (f(a) + f(b))  
 
-    for index in range(1, n):
-        I += 2 * f(a + index * h)  
-    
-    return I * (h / 2) 
+def trapezoid(func, lower, upper, steps=256):
+    """Approximate the integral of a function using the trapezoidal rule.
+
+    Args:
+        func (Callable[[float], float]): Function to integrate.
+        lower (float): Lower bound of integration.
+        upper (float): Upper bound of integration.
+        steps (int, optional): Number of subdivisions. Defaults to 256.
+
+    Returns:
+        float: Approximation of the integral.
+    """
+    step_size = (upper - lower) / steps
+    integral = func(lower) + func(upper)
+
+    for index in range(1, steps):
+        integral += 2 * func(lower + index * step_size)
+
+    return integral * (step_size / 2)
+
 
 def main():
-    parser = argparse.ArgumentParser(description='Trapezoid model')
-    parser.add_argument('-a', type=float, required=True, help='lower bound')
-    parser.add_argument('-b', type=float, required=True, help='upper bound')
-    parser.add_argument('-n', type=int, required=True, help='number of steps')
+    """Parse command-line arguments and run trapezoidal integration."""
+    parser = argparse.ArgumentParser(description="Trapezoidal integration demo")
+    parser.add_argument("-a", "--lower", type=float, required=True,
+                        help="Lower bound of integration")
+    parser.add_argument("-b", "--upper", type=float, required=True,
+                        help="Upper bound of integration")
+    parser.add_argument("-n", "--steps", type=int, required=True,
+                        help="Number of steps in the trapezoidal rule")
     args = parser.parse_args()
-    
-    f = math.cos
-    exact_ans = math.sin(args.b) - math.sin(args.a)
-    approx_ans = trapezoid(f, args.a, args.b, args.n)
-    error = abs(exact_ans - approx_ans)
-    print(f'{args.n}, {error:.3f}')
 
-if __name__ == '__main__':
+    func = math.cos
+    exact = math.sin(args.upper) - math.sin(args.lower)
+    approx = trapezoid(func, args.lower, args.upper, args.steps)
+    error = abs(exact - approx)
+    print(f"Steps: {args.steps}, Error: {error:.3f}")
+
+
+if __name__ == "__main__":
     main()
