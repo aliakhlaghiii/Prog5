@@ -2,7 +2,6 @@
 #SBATCH --job-name=assignment1
 #SBATCH --comment='implement trapezoid integration'
 
-#SBATCH --account=Ali
 #SBATCH --partition=workstations
 
 #SBATCH --output=%x_%j.out
