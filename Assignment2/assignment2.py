@@ -1,18 +1,27 @@
 #!/usr/bin/python3
+# pylint: disable=invalid-name,too-many-locals
+"""Trapezoidal integration of cos(x) with MPI (mpi4py).
+
+- Rank 0 parses CLI args and broadcasts (a, b, n) to all ranks.
+- Each rank computes its local contribution using the trapezoidal rule.
+- Results are reduced on rank 0 (MPI.SUM) and rank 0 reports accuracy.
+
+Usage:
+  mpirun -n <R> python3 script.py -a <lower> -b <upper> -n <steps>
+"""
+
 import math
 import argparse
 from mpi4py import MPI
 
 
 def main():
+    """MPI setup, broadcast (a, b, n), split work, compute local sum,
+    reduce to rank 0, and print results."""
     # mpi setup
     comm = MPI.COMM_WORLD   # gather all the ranks in a communicator 
     rank = comm.Get_rank()  # id of this rank
     size = comm.Get_size()  # total number of ranks (processes)
-
-    # before broadcast, we have to define args on non-root ranks
-    a = b = None
-    n = None
     
     if rank == 0:
         # rank0 is in charge of control and broadcast 
@@ -30,7 +39,8 @@ def main():
             raise ValueError("steps (-n) must be >= 1")
 
     # broadcast arguments from rank0 to all ranks
-    a, b, n = comm.bcast((a, b, n), root=0)
+    # rank0 broadcast the data and the other ranks return None
+    a, b, n = comm.bcast((a, b, n) if rank == 0 else None, root=0)
 
     # split the number of steps for each rank
     base = n // size  # minimum value of steps for each rank
