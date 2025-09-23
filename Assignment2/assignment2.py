@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-# pylint: disable=invalid-name,too-many-locals
 """Trapezoidal integration of cos(x) with MPI (mpi4py).
 
 - Rank 0 parses CLI args and broadcasts (a, b, n) to all ranks.
@@ -43,16 +42,22 @@ def main():
     a, b, n = comm.bcast((a, b, n) if rank == 0 else None, root=0)
 
     # split the number of steps for each rank
-    base = n // size  # minimum value of steps for each rank
-    r = n % size   # residual -> given to the first r ranks
-    local_steps = base + (1 if rank < r else 0)   # adding residuals to n first ranks
-    i_start = rank * base + min(rank, r)   # index of start for rank
+    workers = size - 1    # size=33 but we need 32 workers
+    if workers <= 0:
+        if rank == 0:
+            print('need at east 2 ranks')
+        return     
+    w = rank - 1   
+    base = n // workers  # minimum value of steps for each rank
+    r = n % workers   # residual -> given to the first r ranks
+    local_steps = base + (1 if w < r else 0)   # adding residuals to n first ranks
+    i_start = w * base + min(rank, r)   # index of start for rank
     i_end = i_start + local_steps   # index of end 
 
     # trapezoid rule
     # recall: trapezoid rule = (h/2)*f(a + 2*sigma f(a+ih) + f(b))
     h = (b - a) / n
-    local_sum = 0.0   # initial each local rank
+    local_sum = 0.0   # initialize each local rank
 
     for i in range(i_start + 1, i_end):   # without boundaries
         x = a + i * h   # f(x) = f(a + ih)
