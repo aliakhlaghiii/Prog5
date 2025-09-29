@@ -1,6 +1,10 @@
 # Assignment 3 — Profiling Python Code
+## 1.1
 
-## 1.1 Profiling results
+**Profiling method:** I ran `cProfile` on `assignment3.py` and saved the output to `sieve_profiler_output.txt` using:
+`python3 -m cProfile -s tottime assignment3.py > sieve_profiler_output.txt`
+
+## 1.2 Profiling results
 
 **Q1. Can you see where the most calculation time is spent? What line number/function is it?**  
 - Yes. The highest `tottime` is in the `sieve` function (line 2), which contains the nested loops that mark off composite numbers.  
