@@ -1,5 +1,5 @@
 import math
-def sieve(n=100):
+def sieve(n=200):
     A = [True] * (n+1) 
     A[0] = A[1] = False
     for i in range(2, math.isqrt(n)+1):
