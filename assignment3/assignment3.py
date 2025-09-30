@@ -1,118 +1,111 @@
 #!/usr/bin/python3
-import math
+"""Parallel segmented Sieve of Eratosthenes with mpi4py.
+
+- Rank 0: parses args, computes base primes up to floor(sqrt(n)), broadcasts.
+- Ranks 1..size-1: mark composites in their local [low..high] segment.
+- Rank 0 gathers local prime lists and prints the count.
+"""
+
 import argparse
+import math
+from typing import List
 from mpi4py import MPI
 
+CONTROLLER_RANK = 0
+DEBUG = False
 
-def main():
-    # --- MPI setup ---
+
+def sieve(n: int) -> List[int]:
+    """Return all primes in [2..n] using the classic sieve."""
+    if n <= 1:
+        raise ValueError('n must be > 1')
+    mask = [True] * (n + 1)  # was A
+    mask[0] = mask[1] = False
+    for i in range(2, math.isqrt(n) + 1):
+        if mask[i]:
+            for j in range(i * i, n + 1, i):
+                mask[j] = False
+    return [k for k in range(2, n + 1) if mask[k]]
+
+
+def main() -> None:
+    """MPI orchestration: parse n, split work, gather results on rank 0."""
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    # --- rank0: parse args ---
-    if rank == 0:
-        parser = argparse.ArgumentParser(description="Parallel prime counting with MPI")
-        parser.add_argument("-n", "--limit", type=int, required=True,
-                            help="Upper bound n (find primes in [2..n])")
+    if rank == CONTROLLER_RANK:
+        parser = argparse.ArgumentParser(
+            description="Parallel sieve up to n"
+        )
+        parser.add_argument(
+            "-n", "--limit", type=int, required=True,
+            help="Upper bound n (find primes in [2..n])"
+        )
         args = parser.parse_args()
-        limit = args.limit
-        if limit < 2:
-            raise ValueError("limit (-n) must be >= 2")
-
-        # build base primes up to floor(sqrt(limit)) inline (classic sieve)
-        lim = math.isqrt(limit)
-        baseA = [True] * (lim + 1)
-        if lim >= 0: baseA[0] = False
-        if lim >= 1: baseA[1] = False
-        for p in range(2, math.isqrt(lim) + 1):
-            if baseA[p]:
-                start = p * p
-                step = p
-                baseA[start:lim + 1:step] = [False] * (((lim - start) // step) + 1)
-        base_primes = [i for i in range(2, lim + 1) if baseA[i]]
+        n_limit = args.limit  # was N
+        if n_limit <= 1:
+            raise ValueError("n must be > 1")
+        if size < 2:
+            raise RuntimeError(
+                "Run with at least 2 ranks so rank 0 can orchestrate only."
+            )
     else:
-        limit = None
+        n_limit = None  # type: ignore[assignment]
+
+    # Broadcast N to everyone
+    n_limit = comm.bcast(n_limit, root=CONTROLLER_RANK)
+
+    if rank == CONTROLLER_RANK:
+        base_primes = sieve(int(math.isqrt(n_limit)))
+    else:
         base_primes = None
+    base_primes = comm.bcast(base_primes, root=CONTROLLER_RANK)
 
-    # --- broadcast shared params ---
-    limit = comm.bcast(limit if rank == 0 else None, root=0)
-    base_primes = comm.bcast(base_primes if rank == 0 else None, root=0)
-
-    # --- split work among ranks (rank0 = controller) ---
+    # use workers(rank0 is supervisor/controller)
+    total = n_limit - 1                   # numbers from 2 to N
     workers = size - 1
-    if workers <= 0:
-        if rank == 0:
-            print("need at least 2 ranks")
-        return
 
-    lower = 2
-    N = limit - lower + 1  # total numbers in [2..limit]
-
-    if rank == 0:
-        local_list = None
-        local_count = 0  # controller doesn't compute
+    if rank == CONTROLLER_RANK or workers == 0:
+        # rank 0 does no local compute
+        local_primes: List[int] = []
+        # (optional) debug
+        # print(f"Rank 0: orchestrator only")
     else:
-        w = rank - 1                       # worker index in [0..workers-1]
-        q, r = divmod(N, workers)          # golden formula
-        len_w  = q + (1 if w < r else 0)
-        start_w = lower + w * q + min(w, r)
-        end_w   = start_w + len_w - 1      # inclusive
+        w = rank - 1    # worker index in [0..workers-1]
+        base, r = divmod(total, workers)    # base and residuals
+        local_n = base + (1 if w < r else 0)
+        offset = w * base + min(w, r)   # index of start in each rank
 
-        if len_w <= 0:
-            local_list = []
-            local_count = 0
-        else:
-            # --- segmented sieve on [start_w .. end_w] ---
-            low  = max(start_w, 2)
-            high = end_w
-            seg_len = high - low + 1
-            mark = [True] * seg_len
-            for p in base_primes:
-                p2 = p * p
-                # first multiple of p inside [low..high], never before p^2
-                start = max(p2, ((low + p - 1) // p) * p)
+        low = 2 + offset   # start number of interval in each rank
+        high = low + local_n - 1 if local_n > 0 else None   # end of interval
+
+        if DEBUG:
+            print(f"Rank {rank}: low={low}, high={high}, count={local_n}")
+
+        if local_n > 0 and high is not None:
+            seg = [True] * local_n   # making an array of Trues for each rank
+            for p in base_primes:  # type: ignore[union-attr]
+                # first multiple of p within [low..high], but not before p*p
+                start = max(p * p, math.ceil(low / p) * p)
                 if start > high:
                     continue
-                for j in range(start, high + 1, p):
-                    mark[j - low] = False
-            local_list = [low + i for i, ok in enumerate(mark) if ok]
-            local_count = len(local_list)
+                for m in range(start, high + 1, p):
+                    seg[m - low] = False   # mark multiples as composite
+            local_primes = [i for i, ok in enumerate(seg, start=low) if ok]
+        else:
+            local_primes = []
 
-    # --- reduce only: total count (no gather) ---
-    total_count = comm.reduce(local_count, op=MPI.SUM, root=0)
+    # Gather results to rank 0
+    all_primes = comm.gather(local_primes, root=CONTROLLER_RANK)
 
-    # ======= Added: show first/last K primes without heavy gather =======
-    K = 10  # می‌تونی 20 هم بذاری
-    local_head = [] if rank == 0 else local_list[:K]
-    local_tail = [] if rank == 0 else local_list[-K:]
-
-    heads = comm.gather(local_head, root=0)
-    tails = comm.gather(local_tail, root=0)
-
-    # --- rank0: report ---
-    if rank == 0:
-        # build first K by scanning heads in rank order
-        first_k = []
-        for rnk in range(1, size):
-            for x in heads[rnk]:
-                if len(first_k) < K:
-                    first_k.append(x)
-                else:
-                    break
-            if len(first_k) >= K:
-                break
-
-        # build last K by concatenating all tails then taking the last K
-        all_tails = []
-        for rnk in range(1, size):
-            all_tails.extend(tails[rnk])
-        last_k = all_tails[-K:] if len(all_tails) >= K else all_tails
-
-        print(f"Total primes up to {limit}: {total_count} (via MPI.REDUCE)")
-        print(f"First {min(K, total_count)} primes: {first_k}")
-        print(f"Last  {min(K, total_count)} primes:  {last_k}")
+    if rank == CONTROLLER_RANK:
+        primes: List[int] = []
+        for chunk in all_primes:
+            primes.extend(chunk)
+        print(f"number of primes = {len(primes)}")
+        # print(primes)   # optional
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
