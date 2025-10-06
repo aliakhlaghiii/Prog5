@@ -1,95 +1,27 @@
-#!/usr/bin/env python3
-import os
-import sys
-from Bio import SeqIO   # to read bio datasets
-import sqlalchemy
-from sqlalchemy import create_engine, text 
+#!/usr/bin/python3
+"""
+Minimal, pylint-friendly version of the original script.
 
-# as same as the given snippet code to import the correct version
-if sqlalchemy.__version__.startswith('1.4'):
-    from sqlalchemy import create_engine
-    from sqlalchemy.engine import make_url, URL
-    from sqlalchemy.sql import text
-elif sqlalchemy.__version__.startswith('2'):
-    from sqlalchemy import create_engine
-    from sqlalchemy.url import make_url, URL
-    from sqlalchemy.sql import text
-
-# as for the assignment mentioned, I read it in hardcode way, otherwise I can read it from CLI
-file_path = '/homes/aakhlaghi/archaea.1.genomic.gbff'
-
-'''(optional:CLI)
-import argparse
-def parse_args():
-    p = argparse.ArgumentParser(description="Parse GenBank files and store basic stats in MariaDB/MySQL.")
-    p.add_argument("files", nargs="+", help="Path(s) to .gb or .gbff file(s)")  # nargs to add one or multiple files
-    return p.parse_args()
-'''
-
-engine = create_engine("mysql+mysqldb:///?read_default_file=/homes/aakhlaghi/.my.cnf")
-
-with engine.connect() as conn:
-    result = conn.execute(text("SELECT DATABASE();"))
-    print("Connected successfully to:", result.scalar())
-
-ddl_statements = [
-    """CREATE TABLE IF NOT EXISTS genomes (
-         acce_ver VARCHAR(40) NOT NULL,
-         organism VARCHAR(255) NOT NULL,
-         gene_size BIGINT UNSIGNED NOT NULL,
-         gene_count INT UNSIGNED NOT NULL,
-         protein_count INT UNSIGNED NOT NULL,
-         taxon_id INT UNSIGNED NULL,
-         PRIMARY KEY (acce_ver)
-       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;""",
-
-    """CREATE TABLE IF NOT EXISTS proteins (
-         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-         acce_ver VARCHAR(40) NOT NULL,
-         prot_id VARCHAR(64),
-         product TEXT,
-         locus_tag VARCHAR(64),
-         gene_name VARCHAR(128),
-         loc_start INT UNSIGNED,
-         loc_end INT UNSIGNED,
-         strand ENUM('+','-'),
-         PRIMARY KEY (id),
-         FOREIGN KEY (acce_ver) REFERENCES genomes(acce_ver)
-           ON DELETE CASCADE ON UPDATE CASCADE
-       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;""",
-
-    """CREATE TABLE IF NOT EXISTS protein_ec (
-         prot_id_ref BIGINT UNSIGNED NOT NULL,
-         ec VARCHAR(32) NOT NULL,
-         PRIMARY KEY (prot_id_ref, ec),
-         FOREIGN KEY (prot_id_ref) REFERENCES proteins(id)
-           ON DELETE CASCADE ON UPDATE CASCADE
-       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;""",
-
-    """CREATE TABLE IF NOT EXISTS protein_go (
-         prot_id_ref BIGINT UNSIGNED NOT NULL,
-         go_id VARCHAR(32) NOT NULL,
-         PRIMARY KEY (prot_id_ref, go_id),
-         FOREIGN KEY (prot_id_ref) REFERENCES proteins(id)
-           ON DELETE CASCADE ON UPDATE CASCADE
-       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"""
-]
-
-with engine.begin() as conn:
-    for stmt in ddl_statements:
-        conn.execute(text(stmt))
-
-print("All tables created successfully.")
+Changes (no behavioral change, no new functions):
+- English docstrings/comments.
+- Removed unused/redundant imports (os, sys, conditional reimports, make_url, URL).
+- Moved `import time` to top-level.
+- Renamed a few short vars to pass pylint naming (idx/genome/protein).
+- Wrapped long SQL and print lines to <= 100 chars.
+"""
 
 import time
+from Bio import SeqIO  # to read bio datasets
+from sqlalchemy import create_engine, text
 
-print("Starting data insertion with executemany...")
+# For the assignment, the input file is hardcoded; could be CLI in future.
+FILE_PATH = "/homes/aakhlaghi/archaea.1.genomic.gbff"
 
 # -------------------------------
-# تابع استخراج داده‌ها از رکوردها
+# Data extraction helpers
 # -------------------------------
 def extract_record_fields(record):
-    """Extract genome-level information from GenBank record."""
+    """Extract genome-level information from a GenBank record."""
     acce = record.annotations.get("accessions", [str(record.id)])[0]
     version = record.annotations.get("sequence_version")
     acce_ver = f"{acce}.{version}" if version else acce
@@ -107,9 +39,9 @@ def extract_record_fields(record):
     taxon_id = None
     for feat in record.features:
         if feat.type == "source":
-            for x in feat.qualifiers.get("db_xref", []):
-                if x.startswith("taxon:"):
-                    taxon_id = int(x.split(":")[1])
+            for xref in feat.qualifiers.get("db_xref", []):
+                if xref.startswith("taxon:"):
+                    taxon_id = int(xref.split(":", maxsplit=1)[1])
 
     return {
         "acce_ver": acce_ver,
@@ -117,7 +49,7 @@ def extract_record_fields(record):
         "gene_size": gene_size,
         "gene_count": gene_count,
         "protein_count": protein_count,
-        "taxon_id": taxon_id
+        "taxon_id": taxon_id,
     }
 
 
@@ -128,17 +60,20 @@ def extract_protein_data(record, acce_ver):
     go_map = []
 
     for feat in record.features:
-        if feat.type == "CDS":
-            q = feat.qualifiers
-            prot_id = q.get("protein_id", [None])[0]
-            product = q.get("product", [None])[0]
-            locus_tag = q.get("locus_tag", [None])[0]
-            gene_name = q.get("gene", [None])[0]
-            loc_start = int(feat.location.start)
-            loc_end = int(feat.location.end)
-            strand = "+" if feat.location.strand == 1 else "-"
+        if feat.type != "CDS":
+            continue
 
-            proteins.append({
+        q = feat.qualifiers
+        prot_id = q.get("protein_id", [None])[0]
+        product = q.get("product", [None])[0]
+        locus_tag = q.get("locus_tag", [None])[0]
+        gene_name = q.get("gene", [None])[0]
+        loc_start = int(feat.location.start)
+        loc_end = int(feat.location.end)
+        strand = "+" if feat.location.strand == 1 else "-"
+
+        proteins.append(
+            {
                 "acce_ver": acce_ver,
                 "prot_id": prot_id,
                 "product": product,
@@ -146,71 +81,155 @@ def extract_protein_data(record, acce_ver):
                 "gene_name": gene_name,
                 "loc_start": loc_start,
                 "loc_end": loc_end,
-                "strand": strand
-            })
+                "strand": strand,
+            }
+        )
 
-            # EC numbers
-            for ec in q.get("EC_number", []):
-                ec_map.append((prot_id, ec))
-            # GO terms
-            for go in q.get("GO_function", []) + q.get("GO", []):
-                go_map.append((prot_id, go))
+        # EC numbers
+        for ec_code in q.get("EC_number", []):
+            ec_map.append((prot_id, ec_code))
+        # GO terms
+        for go_term in q.get("GO_function", []) + q.get("GO", []):
+            go_map.append((prot_id, go_term))
 
     return proteins, ec_map, go_map
 
-# batch size to avoid limitation
-BATCH_SIZE = 200
 
-records = list(SeqIO.parse(file_path, "genbank"))
-total = len(records)
-print(f"Total records found: {total}")
+if __name__ == "__main__":
+    engine = create_engine(
+        "mysql+mysqldb:///?read_default_file=/homes/aakhlaghi/.my.cnf"
+    )
 
-start_time = time.time()
-count = 0
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT DATABASE();"))
+        print("Connected successfully to:", result.scalar())
 
-for i in range(0, total, BATCH_SIZE):
-    batch = records[i:i + BATCH_SIZE]
+    ddl_statements = [
+        (
+            "CREATE TABLE IF NOT EXISTS genomes ("
+            "  acce_ver VARCHAR(40) NOT NULL,"
+            "  organism VARCHAR(255) NOT NULL,"
+            "  gene_size BIGINT UNSIGNED NOT NULL,"
+            "  gene_count INT UNSIGNED NOT NULL,"
+            "  protein_count INT UNSIGNED NOT NULL,"
+            "  taxon_id INT UNSIGNED NULL,"
+            "  PRIMARY KEY (acce_ver)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS proteins ("
+            "  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
+            "  acce_ver VARCHAR(40) NOT NULL,"
+            "  prot_id VARCHAR(64),"
+            "  product TEXT,"
+            "  locus_tag VARCHAR(64),"
+            "  gene_name VARCHAR(128),"
+            "  loc_start INT UNSIGNED,"
+            "  loc_end INT UNSIGNED,"
+            "  strand ENUM('+','-'),"
+            "  PRIMARY KEY (id),"
+            "  FOREIGN KEY (acce_ver) REFERENCES genomes(acce_ver)"
+            "    ON DELETE CASCADE ON UPDATE CASCADE"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS protein_ec ("
+            "  prot_id_ref BIGINT UNSIGNED NOT NULL,"
+            "  ec VARCHAR(32) NOT NULL,"
+            "  PRIMARY KEY (prot_id_ref, ec),"
+            "  FOREIGN KEY (prot_id_ref) REFERENCES proteins(id)"
+            "    ON DELETE CASCADE ON UPDATE CASCADE"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        ),
+        (
+            "CREATE TABLE IF NOT EXISTS protein_go ("
+            "  prot_id_ref BIGINT UNSIGNED NOT NULL,"
+            "  go_id VARCHAR(32) NOT NULL,"
+            "  PRIMARY KEY (prot_id_ref, go_id),"
+            "  FOREIGN KEY (prot_id_ref) REFERENCES proteins(id)"
+            "    ON DELETE CASCADE ON UPDATE CASCADE"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+        ),
+    ]
 
     with engine.begin() as conn:
-        genome_rows = []
-        protein_rows = []
-        ec_rows = []
-        go_rows = []
+        for stmt in ddl_statements:
+            conn.execute(text(stmt))
 
-        # preparation for each batch 
-        for record in batch:
-            g = extract_record_fields(record)
-            genome_rows.append(g)
+    print("All tables created successfully.")
 
-            proteins, ecs, gos = extract_protein_data(record, g["acce_ver"])
-            for p in proteins:
-                protein_rows.append(p)
-            for ec in ecs:
-                ec_rows.append(ec)
-            for go in gos:
-                go_rows.append(go)
+    print("Starting data insertion with executemany...")
 
-        # executemany
-        if genome_rows:
-            conn.execute(text("""
-                INSERT INTO genomes (acce_ver, organism, gene_size, gene_count, protein_count, taxon_id)
-                VALUES (:acce_ver, :organism, :gene_size, :gene_count, :protein_count, :taxon_id)
-                ON DUPLICATE KEY UPDATE
-                    organism=VALUES(organism),
-                    gene_size=VALUES(gene_size),
-                    gene_count=VALUES(gene_count),
-                    protein_count=VALUES(protein_count),
-                    taxon_id=VALUES(taxon_id);
-            """), genome_rows)
+    # batch size to avoid limitation
+    BATCH_SIZE = 200
 
-        if protein_rows:
-            conn.execute(text("""
-                INSERT INTO proteins (acce_ver, prot_id, product, locus_tag, gene_name, loc_start, loc_end, strand)
-                VALUES (:acce_ver, :prot_id, :product, :locus_tag, :gene_name, :loc_start, :loc_end, :strand);
-            """), protein_rows)
+    records = list(SeqIO.parse(FILE_PATH, "genbank"))
+    total = len(records)
+    print(f"Total records found: {total}")
 
-        count += len(batch)
-        print(f"Committed {count}/{total} records ({time.time() - start_time:.1f}s elapsed)")
+    start_time = time.time()
+    count = 0
 
-print(f"All {count} records inserted successfully in {time.time() - start_time:.1f}s.")
+    for idx in range(0, total, BATCH_SIZE):
+        batch = records[idx : idx + BATCH_SIZE]
 
+        with engine.begin() as conn:
+            genome_rows = []
+            protein_rows = []
+            ec_rows = []
+            go_rows = []
+
+            # preparation for each batch
+            for record in batch:
+                genome = extract_record_fields(record)
+                genome_rows.append(genome)
+
+                proteins, ec_list, go_list = extract_protein_data(
+                    record, genome["acce_ver"]
+                )
+                for protein in proteins:
+                    protein_rows.append(protein)
+                for ec_item in ec_list:
+                    ec_rows.append(ec_item)
+                for go_item in go_list:
+                    go_rows.append(go_item)
+
+            # executemany
+            if genome_rows:
+                conn.execute(
+                    text(
+                        "INSERT INTO genomes "
+                        "(acce_ver, organism, gene_size, gene_count, "
+                        " protein_count, taxon_id) "
+                        "VALUES "
+                        "(:acce_ver, :organism, :gene_size, :gene_count, "
+                        " :protein_count, :taxon_id) "
+                        "ON DUPLICATE KEY UPDATE "
+                        "organism=VALUES(organism), "
+                        "gene_size=VALUES(gene_size), "
+                        "gene_count=VALUES(gene_count), "
+                        "protein_count=VALUES(protein_count), "
+                        "taxon_id=VALUES(taxon_id);"
+                    ),
+                    genome_rows,
+                )
+
+            if protein_rows:
+                conn.execute(
+                    text(
+                        "INSERT INTO proteins "
+                        "(acce_ver, prot_id, product, locus_tag, gene_name, "
+                        " loc_start, loc_end, strand) "
+                        "VALUES "
+                        "(:acce_ver, :prot_id, :product, :locus_tag, "
+                        " :gene_name, :loc_start, :loc_end, :strand);"
+                    ),
+                    protein_rows,
+                )
+
+            count += len(batch)
+            elapsed = time.time() - start_time
+            print(f"Committed {count}/{total} records ({elapsed:.1f}s elapsed)")
+
+    total_time = time.time() - start_time
+    print(f"All {count} records inserted successfully in {total_time:.1f}s.")
