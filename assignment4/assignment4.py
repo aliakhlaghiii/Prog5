@@ -1,9 +1,5 @@
 #!/usr/bin/python3
 """
-Minimal, pylint-friendly version of the original script.
-
-Changes (no behavioral change, no new functions):
-- English docstrings/comments.
 - Removed unused/redundant imports (os, sys, conditional reimports, make_url, URL).
 - Moved `import time` to top-level.
 - Renamed a few short vars to pass pylint naming (idx/genome/protein).
