@@ -2,7 +2,7 @@
 """
 - Removed unused/redundant imports (os, sys, conditional reimports, make_url, URL).
 - Moved `import time` to top-level.
-- Renamed a few short vars to pass pylint naming (idx/genome/protein).
+- Renamed variables.
 - Wrapped long SQL and print lines to <= 100 chars.
 """
 
