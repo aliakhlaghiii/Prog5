@@ -1,0 +1,34 @@
+# SQL Discussion form
+
+## Administration
+* Your name:
+
+* Your discussion partner's name:
+Joukje kloosterman
+* Commit hash of the code you discussed: 
+f85a7be44b3a99d0b135dc2a38d2da5b82044371
+* Your code's pylint score:
+9.2/10
+## Discussion
+### Pre-set discussion points:
+- Start by discussing your DB design choices (tables, data types)
+- Then go on to your implementation;
+  1. How did you split up the work (functions/classes)?
+  AA: made 4 tables for Genomes, Proteins, Protein_GO and Protein_EC
+  JK: but I think I could design the schema with 3 tables. one for species and 2 tables for each genome and protein.
+  2. How long (about) does it take, where is time spent?
+  AA: it took around 7 minutes(elapsed) and around 4 minutes to run the code.
+  JK: maybe parallel processing could help you to spend less time.
+  3. Did you use parallel processing, if so how? If not, why not?
+  AA: no, since when you look at cpu or sys time, it is about 0. that means my code is I/O based and most of the time
+  it wait for I/O. also we did not calculate complicated operations. so, I decided to not use parallel processing.
+  JK: you could do parallel processing and put each batch to one node. maybe it works better.
+  4. What was your difference in =pylint= scores? Can you see why?
+  AA: I used just docstrings and limit the length of the lines without using any extra modules.
+  5. How did the normalization level (table number) influence the code?
+  AA: as I said, I made 4 tables.may be I could made less but I prefer to keep the dataset clearer.
+  6. Did your choice in database table design make it more or less hard to do the assignment?
+  AA: it leads to make dataset more ordered but the operations and code logic would be more complicated.
+
+### Extra points that came up during discussion of your code:
+### Extra comments about the assignment:
