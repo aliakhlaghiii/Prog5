@@ -26,7 +26,7 @@ f85a7be44b3a99d0b135dc2a38d2da5b82044371
   4. What was your difference in =pylint= scores? Can you see why?
   AA: I used just docstrings and limit the length of the lines without using any extra modules.
   5. How did the normalization level (table number) influence the code?
-  AA: as I said, I made 4 tables.may be I could made less but I prefer to keep the dataset clearer.
+  AA: I separated multi-valued attributes (EC numbers, GO terms) into mapping tables protein_ec and protein_go.
   6. Did your choice in database table design make it more or less hard to do the assignment?
   AA: it leads to make dataset more ordered but the operations and code logic would be more complicated.
 
