@@ -324,8 +324,8 @@ def main():
     Print_Question_2(df)
     Print_Question_3(df)
     Print_Question_4(df)
-    Print_Question_5(df)
-    Print_Question_6(df)
+    df_cleaned = Print_Question_5(df)
+    Print_Question_6(df_cleaned)
 
     print("\n" + "="*60, flush=True)
     print("Done!", flush=True)
@@ -333,7 +333,6 @@ def main():
     
     # Stop Spark
     spark.stop()
-
 
 if __name__ == "__main__":
     main()
