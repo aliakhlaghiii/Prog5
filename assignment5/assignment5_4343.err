@@ -1,7 +1,0 @@
-Setting default log level to "WARN".
-To adjust logging level use sc.setLogLevel(newLevel). For SparkR, use setLogLevel(newLevel).
-25/10/12 09:55:00 WARN NativeCodeLoader: Unable to load native-hadoop library for your platform... using builtin-java classes where applicable
-25/10/12 09:58:00 WARN TaskSetManager: Stage 0 contains a task of very large size (126183 KiB). The maximum recommended task size is 1000 KiB.
-[Stage 0:>                                                          (0 + 1) / 2][Stage 0:=============================>                             (1 + 1) / 2]                                                                                25/10/12 09:58:08 WARN TaskSetManager: Stage 3 contains a task of very large size (126183 KiB). The maximum recommended task size is 1000 KiB.
-[Stage 3:>                                                          (0 + 1) / 1]                                                                                25/10/12 09:58:14 WARN TaskSetManager: Stage 4 contains a task of very large size (126183 KiB). The maximum recommended task size is 1000 KiB.
-[Stage 4:>                                                          (0 + 1) / 2][Stage 4:=============================>                             (1 + 1) / 2]                                                                                
