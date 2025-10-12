@@ -112,6 +112,86 @@ def Print_Question_1(df):
     print(f"\nQ1) Average features per Archaeal genome: {int(avg_features)}")
     return int(avg_features)
 
+def Print_Question_2(df):
+    """Q2: What is the ratio between coding and non-coding features?"""
+    # Count coding features (CDS)
+    coding_count = df.filter(df.feature_type == "CDS").count()
+    
+    # Count non-coding features (everything except CDS)
+    non_coding_count = df.filter(df.feature_type != "CDS").count()
+    
+    # Calculate ratio
+    if non_coding_count == 0:
+        ratio = float('inf')
+    else:
+        ratio = coding_count / non_coding_count
+    
+    print(f"\nQ2) Ratio of coding to non-coding features:")
+    print(f"Ratio (coding/non-coding): {ratio:.2f}")
+    
+    return ratio
+
+def Print_Question_3(df):
+    """Q3: Minimal and maximal number of proteins in a genome for all organisms?"""
+    
+    # count proteins (CDS) per genome
+    proteins_per_genome = (df.filter(df.feature_type == "CDS")
+                           .groupBy("acce_ver")
+                           .count()
+                           .withColumnRenamed("count", "protein_count"))
+    
+    # get organism name for each genome
+    genome_info = df.select("acce_ver", "organism").distinct()
+    proteins_with_organism = proteins_per_genome.join(genome_info, "acce_ver")
+    
+    # find the genome with MINIMUM proteins
+    # sort beshe kam be ziad, avalin ro begirim
+    min_row = proteins_with_organism.orderBy("protein_count", ascending=True).first()
+    
+    # find the genome with MAXIMUM proteins
+    max_row = proteins_with_organism.orderBy("protein_count", ascending=False).first()
+    
+    print(f"\nQ3) Minimal and maximal number of proteins per genome:")
+    print(f"Minimum: {min_row['protein_count']} proteins")
+    print(f"Genome: {min_row['acce_ver']}")
+    print(f"Organism: {min_row['organism']}")
+    print(f"Maximum: {max_row['protein_count']} proteins")
+    print(f"Genome: {max_row['acce_ver']}")
+    print(f"Organism: {max_row['organism']}")
+    
+    return min_row['protein_count'], max_row['protein_count']
+
+def Print_Question_4(df):
+    """
+    Q4: What is the average length of a feature?
+    """
+    # Compute feature length as (loc_end - loc_start)
+    df_len = df.withColumn("feat_len", df.loc_end - df.loc_start)
+    
+    # Average length over all features
+    avg_len = df_len.agg({"feat_len": "avg"}).collect()[0][0]
+    
+    print(f"\nQ4) Average feature length (bp): {avg_len:.2f}")
+    return float(avg_len)
+
+def Print_Question_5(df):
+    df_non_coding = df.filter(df.feature_type != "CDS")
+    return df_non_coding
+
+def Print_Question_6(df):
+    """
+    Q4: What is the average length of a non_coding feature?
+    """
+    df_non_coding = Print_Question_5(df)
+
+    # Compute feature length as (loc_end - loc_start)
+    df_non_coding_len = df_non_coding.withColumn("feat_len", df_non_coding.loc_end - df_non_coding.loc_start)
+    
+    # Average length over all features
+    avg_len_non_coding = df_non_coding_len.agg({"feat_len": "avg"}).collect()[0][0]
+    
+    print(f"\nQ4) Average feature length (bp): {avg_len_non_coding:.2f}")
+    return float(avg_len_non_coding)
 
 def main():
     """Main execution function."""
@@ -181,7 +261,11 @@ def main():
     print("="*60, flush=True)
     
     Print_Question_1(df)
-    
+    Print_Question_2(df)
+    Print_Question_3(df)
+    Print_Question_4(df)
+    Print_Question_6(df)
+
     print("\n" + "="*60, flush=True)
     print("Done!", flush=True)
     print("="*60, flush=True)
