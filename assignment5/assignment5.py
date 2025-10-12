@@ -2,6 +2,7 @@
 """
 Assignment 5 - PySpark GenBank Parser
 Reads a GBFF file and answers questions using Spark DataFrames.
+Only processes 4 feature types: CDS, ncRNA, rRNA, and gene (without CDS).
 """
 
 from Bio import SeqIO
@@ -32,10 +33,14 @@ def parse_args():
     parser.add_argument("file", help="Path to .gbff file")
     return parser.parse_args()
 
-
 def extract_features_from_record(record):
     """
-    Extract all features from a GenBank record into a flat structure.
+    Extract ONLY relevant features from a GenBank record:
+    1. CDS (coding)
+    2. ncRNA (non-coding)
+    3. rRNA (non-coding)
+    4. gene without CDS (non-coding/cryptic genes)
+    
     Returns a list of Row objects (one per feature).
     """
     rows = []
@@ -57,9 +62,27 @@ def extract_features_from_record(record):
                     break
             break
     
-    # Extract each feature
+    # Collect all CDS locus_tags to identify cryptic genes
+    cds_locus_tags = set()
+    for feat in record.features:
+        if feat.type == "CDS":
+            locus = feat.qualifiers.get("locus_tag", [None])[0]
+            if locus:
+                cds_locus_tags.add(locus)
+    
+    # Extract ONLY relevant features
     for feat in record.features:
         feature_type = feat.type
+        
+        # Filter: only process CDS, ncRNA, rRNA, and gene
+        if feature_type not in ["CDS", "ncRNA", "rRNA", "gene"]:
+            continue
+        
+        # For gene: skip if it has a corresponding CDS (not cryptic)
+        if feature_type == "gene":
+            locus = feat.qualifiers.get("locus_tag", [None])[0]
+            if locus and locus in cds_locus_tags:
+                continue  # This gene has a CDS, so skip it
         
         # Get qualifiers
         q = feat.qualifiers
@@ -77,6 +100,10 @@ def extract_features_from_record(record):
         ec_numbers = ",".join(q.get("EC_number", []))
         go_terms = ",".join(q.get("GO_function", []) + q.get("GO", []))
         
+        # Determine if coding or non-coding
+        # CDS = coding, everything else = non-coding
+        is_coding = (feature_type == "CDS")
+        
         # Create row
         row = Row(
             acce_ver=acce_ver,
@@ -84,6 +111,7 @@ def extract_features_from_record(record):
             genome_size=genome_size,
             taxon_id=taxon_id,
             feature_type=feature_type,
+            is_coding=is_coding,
             prot_id=prot_id,
             product=product,
             locus_tag=locus_tag,
@@ -112,13 +140,14 @@ def Print_Question_1(df):
     print(f"\nQ1) Average features per Archaeal genome: {int(avg_features)}")
     return int(avg_features)
 
+
 def Print_Question_2(df):
     """Q2: What is the ratio between coding and non-coding features?"""
-    # Count coding features (CDS)
-    coding_count = df.filter(df.feature_type == "CDS").count()
+    # Count coding features
+    coding_count = df.filter(df.is_coding == True).count()
     
-    # Count non-coding features (everything except CDS)
-    non_coding_count = df.filter(df.feature_type != "CDS").count()
+    # Count non-coding features
+    non_coding_count = df.filter(df.is_coding == False).count()
     
     # Calculate ratio
     if non_coding_count == 0:
@@ -127,39 +156,42 @@ def Print_Question_2(df):
         ratio = coding_count / non_coding_count
     
     print(f"\nQ2) Ratio of coding to non-coding features:")
-    print(f"Ratio (coding/non-coding): {ratio:.2f}")
+    print(f"  Coding features: {coding_count}")
+    print(f"  Non-coding features: {non_coding_count}")
+    print(f"  Ratio (coding/non-coding): {ratio:.2f}")
     
     return ratio
+
 
 def Print_Question_3(df):
     """Q3: Minimal and maximal number of proteins in a genome for all organisms?"""
     
-    # count proteins (CDS) per genome
+    # Count proteins (CDS) per genome
     proteins_per_genome = (df.filter(df.feature_type == "CDS")
                            .groupBy("acce_ver")
                            .count()
                            .withColumnRenamed("count", "protein_count"))
     
-    # get organism name for each genome
+    # Get organism name for each genome
     genome_info = df.select("acce_ver", "organism").distinct()
     proteins_with_organism = proteins_per_genome.join(genome_info, "acce_ver")
     
-    # find the genome with MINIMUM proteins
-    # sort beshe kam be ziad, avalin ro begirim
+    # Find the genome with MINIMUM proteins
     min_row = proteins_with_organism.orderBy("protein_count", ascending=True).first()
     
-    # find the genome with MAXIMUM proteins
+    # Find the genome with MAXIMUM proteins
     max_row = proteins_with_organism.orderBy("protein_count", ascending=False).first()
     
     print(f"\nQ3) Minimal and maximal number of proteins per genome:")
     print(f"Minimum: {min_row['protein_count']} proteins")
-    print(f"Genome: {min_row['acce_ver']}")
-    print(f"Organism: {min_row['organism']}")
+    print(f"  Genome: {min_row['acce_ver']}")
+    print(f"  Organism: {min_row['organism']}")
     print(f"Maximum: {max_row['protein_count']} proteins")
-    print(f"Genome: {max_row['acce_ver']}")
-    print(f"Organism: {max_row['organism']}")
+    print(f"  Genome: {max_row['acce_ver']}")
+    print(f"  Organism: {max_row['organism']}")
     
     return min_row['protein_count'], max_row['protein_count']
+
 
 def Print_Question_4(df):
     """
@@ -174,24 +206,34 @@ def Print_Question_4(df):
     print(f"\nQ4) Average feature length (bp): {avg_len:.2f}")
     return float(avg_len)
 
+
 def Print_Question_5(df):
-    df_non_coding = df.filter(df.feature_type != "CDS")
-    return df_non_coding
-
-def Print_Question_6(df):
     """
-    Q4: What is the average length of a non_coding feature?
+    Q5: Remove all non-coding (RNA) features and save the cleaned-up version as a new DataFrame.
     """
-    df_non_coding = Print_Question_5(df)
+    # Filter to keep only coding features
+    df_coding_only = df.filter(df.is_coding == True)
+    
+    coding_count = df_coding_only.count()
+    
+    print(f"\nQ5) Cleaned-up DataFrame created (coding features only)")
+    print(f"  Total coding features: {coding_count}")
+    
+    return df_coding_only
 
+def Print_Question_6(df_cleaned):
+    """
+    Q6: What is the average length of a feature in the cleaned-up version?
+    """
     # Compute feature length as (loc_end - loc_start)
-    df_non_coding_len = df_non_coding.withColumn("feat_len", df_non_coding.loc_end - df_non_coding.loc_start)
+    df_len = df_cleaned.withColumn("feat_len", df_cleaned.loc_end - df_cleaned.loc_start)
     
     # Average length over all features
-    avg_len_non_coding = df_non_coding_len.agg({"feat_len": "avg"}).collect()[0][0]
+    avg_len = df_len.agg({"feat_len": "avg"}).collect()[0][0]
     
-    print(f"\nQ4) Average feature length (bp): {avg_len_non_coding:.2f}")
-    return float(avg_len_non_coding)
+    print(f"\nQ6) Average feature length in cleaned-up DataFrame (bp): {avg_len:.2f}")
+    return float(avg_len)
+
 
 def main():
     """Main execution function."""
@@ -203,23 +245,40 @@ def main():
     file_path = args.file
     print(f"Input file: {file_path}", flush=True)
     
+    # Check if file exists
+    try:
+        with open(file_path) as f:
+            pass
+    except FileNotFoundError:
+        print(f"ERROR: File not found: {file_path}", flush=True)
+        sys.exit(1)
+    
     print("\nParsing GenBank file...", flush=True)
+    print("Processing only: CDS, ncRNA, rRNA, and cryptic genes", flush=True)
     
     # Parse file and extract features
     all_rows = []
     record_count = 0
     
-    with open(file_path) as handle:
-        for record in SeqIO.parse(handle, "genbank"):
-            record_count += 1
-            rows = extract_features_from_record(record)
-            all_rows.extend(rows)
-            
-            if record_count % 100 == 0:
-                print(f"Processed {record_count} records...", flush=True)
+    try:
+        with open(file_path) as handle:
+            for record in SeqIO.parse(handle, "genbank"):
+                record_count += 1
+                rows = extract_features_from_record(record)
+                all_rows.extend(rows)
+                
+                if record_count % 100 == 0:
+                    print(f"Processed {record_count} records...", flush=True)
+    except Exception as e:
+        print(f"ERROR while parsing file: {e}", flush=True)
+        sys.exit(1)
     
     print(f"\nTotal records parsed: {record_count}", flush=True)
     print(f"Total features extracted: {len(all_rows)}", flush=True)
+    
+    if len(all_rows) == 0:
+        print("ERROR: No features extracted from file!", flush=True)
+        sys.exit(1)
     
     # Create Spark DataFrame
     print("\nCreating Spark DataFrame...", flush=True)
@@ -231,6 +290,7 @@ def main():
         StructField("genome_size", LongType(), True),
         StructField("taxon_id", IntegerType(), True),
         StructField("feature_type", StringType(), True),
+        StructField("is_coding", StringType(), True),
         StructField("prot_id", StringType(), True),
         StructField("product", StringType(), True),
         StructField("locus_tag", StringType(), True),
@@ -264,6 +324,7 @@ def main():
     Print_Question_2(df)
     Print_Question_3(df)
     Print_Question_4(df)
+    Print_Question_5(df)
     Print_Question_6(df)
 
     print("\n" + "="*60, flush=True)
