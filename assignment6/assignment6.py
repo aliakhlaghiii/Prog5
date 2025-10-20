@@ -126,3 +126,84 @@ spark_df = spark_df.withColumn(
 position_counts = spark_df.groupBy("position_id").count().orderBy("count", ascending=False)
 top_position = position_counts.first()
 print(f"Position with most predictions: {top_position['position_id']} ({top_position['count']} predictions)", flush=True)
+
+# Q5: What protein (Ensembl_proteinid) has the most predictions associated with it?
+protein_counts = spark_df.groupBy("Ensembl_proteinid").count().orderBy("count", ascending=False)
+top_protein = protein_counts.first()
+print(f"name of protein with most predictions: {top_protein['Ensembl_proteinid']} ({top_protein['count']} predictions)", flush=True)
+
+# normalization(3NF)
+# first table: Genes/Proteins
+genes_df = spark_df.select(
+    "Ensembl_geneid",
+    "genename",
+    "Ensembl_proteinid"
+).distinct()
+
+# add increment gene id
+from pyspark.sql.functions import monotonically_increasing_id
+genes_df = genes_df.withColumn("gene_id", monotonically_increasing_id())
+
+print(f"Genes table: {genes_df.count()} unique genes", flush=True)
+
+# join table and id
+spark_df = spark_df.join(
+    genes_df.select("Ensembl_geneid", "gene_id"),
+    on="Ensembl_geneid",
+    how="left"
+)
+
+# second table: for variants
+variants_df = spark_df.select(
+    "chr", "pos(1-based)", "ref", "alt", "position_id", "gene_id",
+    *[c for c in spark_df.columns if '_score' in c or '_pred' in c]
+)
+
+print(f"Variants table: {variants_df.count()} variants", flush=True)
+
+# save to maridb
+print("\nSaving to database...", flush=True)
+
+# read .my.cnf
+import subprocess
+def get_mysql_config(key):
+    result = subprocess.run(
+        ['grep', f'^{key}', '/homes/aakhlaghi/.my.cnf'],
+        capture_output=True,
+        text=True
+    )
+    if result.stdout:
+        return result.stdout.split('=')[1].strip()
+    return None
+
+db_user = get_mysql_config('user')
+db_password = get_mysql_config('password')
+
+print(f"Using user: {db_user}", flush=True)
+
+# JDBC URL
+jdbc_url = f"jdbc:mariadb://mariadb.bin.bioinf.nl/{db_name}"
+
+# save genes table
+genes_df.write \
+    .format("jdbc") \
+    .option("driver", "org.mariadb.jdbc.Driver") \
+    .option("url", jdbc_url) \
+    .option("dbtable", "genes") \
+    .option("user", db_user) \
+    .option("password", db_password) \
+    .mode("overwrite") \
+    .save()
+
+# save variants table
+variants_df.write \
+    .format("jdbc") \
+    .option("driver", "org.mariadb.jdbc.Driver") \
+    .option("url", jdbc_url) \
+    .option("dbtable", "variants") \
+    .option("user", db_user) \
+    .option("password", db_password) \
+    .mode("overwrite") \
+    .save()
+    
+print('wrote!')
