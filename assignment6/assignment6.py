@@ -79,8 +79,8 @@ for col_name in classifier_cols:
     predictions_count[col_name] = count
     print(f"{col_name}: {count} predictions", flush=True)
     
-'''Q2: Make a top five of classifiers based on the total prediction it makes, 
-    and drop all the columns associated with the others.'''
+# Q2: Make a top five of classifiers based on the total prediction it makes, 
+# and drop all the columns associated with the others.
 
 # extract all classifiers and their prediction
 classifier_groups = {}
@@ -122,3 +122,7 @@ spark_df = spark_df.withColumn(
     "position_id",
     concat_ws(":", col("chr"), col("pos(1-based)")))
 
+# Q4: What position has the most predictions associated with it?
+position_counts = spark_df.groupBy("position_id").count().orderBy("count", ascending=False)
+top_position = position_counts.first()
+print(f"Position with most predictions: {top_position['position_id']} ({top_position['count']} predictions)", flush=True)
