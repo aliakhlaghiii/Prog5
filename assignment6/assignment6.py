@@ -9,10 +9,10 @@ sys.path.append('/opt/spark/python/lib/py4j-0.10.9.7-src.zip')
 from sqlalchemy import create_engine, text
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (col, concat_ws,
-                                    monotonically_increasing_id)
+                                    monotonically_increasing_id)  
 from pyspark.sql.types import IntegerType, FloatType
 
-
+# sql default setting
 def get_mysql_config(key):
     """Get MySQL config value from .my.cnf."""
     result = subprocess.run(
@@ -25,7 +25,7 @@ def get_mysql_config(key):
         return result.stdout.split('=')[1].strip()
     return None
 
-
+# connect to data base
 def test_mysql():
     """Test MySQL connection and return database name."""
     print("Test MySQL connection...", flush=True)
@@ -39,7 +39,7 @@ def test_mysql():
         print(f"Connected to: {db_name}", flush=True)
         return db_name
 
-
+# spark default setting
 def init_spark():
     """Initialize and return Spark session."""
     print("\nInitialize Spark with JDBC driver", flush=True)
@@ -54,7 +54,8 @@ def init_spark():
 
 
 def load_data(spark):
-    """Load and limit dataset."""
+    '''instaed of reading the dataset by pandas and convert it to spark_df,
+    I read it by spark directly'''
     print("\nRead the data...", flush=True)
     file_path = (
         '/data/datasets/dbNSFP/snpEff/data/dbNSFP4.9a.txt.gz'
@@ -65,7 +66,7 @@ def load_data(spark):
         header=True,
         inferSchema=False
     )
-    spark_df = spark_df.limit(100)
+    spark_df = spark_df.limit(100)   # (optional):use limit instead of loading the whole dataset
     print(
         f"Loaded: {spark_df.count()} rows, "
         f"{len(spark_df.columns)} columns",
@@ -75,7 +76,7 @@ def load_data(spark):
 
 
 def apply_schema(spark_df):
-    """Cast columns to proper types."""
+    """Cast columns to proper types to apply logic/mathematical works"""
     print("\nApply schema transformations...", flush=True)
     int_cols = [
         "#chr", "pos(1-based)", "hg19_chr", "hg19_pos(1-based)",
@@ -86,7 +87,7 @@ def apply_schema(spark_df):
             int_col,
             col(int_col).cast(IntegerType())
         )
-
+    # cast classifier scores columns
     score_columns = [
         c for c in spark_df.columns
         if '_score' in c.lower() or '_rankscore' in c.lower()
@@ -99,7 +100,7 @@ def apply_schema(spark_df):
     print("Schema applied!", flush=True)
     return spark_df
 
-
+# extract classifiers columns
 def get_classifier_cols(spark_df):
     """Get all classifier column names."""
     return [c for c in spark_df.columns if '_score' in c or '_pred' in c]
@@ -108,12 +109,12 @@ def get_classifier_cols(spark_df):
 def q1_classifier_counts(spark_df, classifier_cols):
     """Q1: Count predictions per classifier."""
     print("\nQ1: Classifier counts", flush=True)
-    predictions_count = {}
+    predictions_count = {}   #a dict to keep the classifier with its number of predictions
     for col_name in classifier_cols:
-        count = spark_df.filter(
-            col(col_name).isNotNull()
+        count = spark_df.filter(   # number of predictions per classifier
+            col(col_name).isNotNull()   # we have to use not-null values since in codebook some columns have Nan
         ).count()
-        predictions_count[col_name] = count
+        predictions_count[col_name] = count   # allocate number of predictions to each classifier
         print(f"{col_name}: {count}", flush=True)
     return predictions_count
 
@@ -124,7 +125,7 @@ def q2_top5_classifiers(classifier_cols, predictions_count):
     classifier_groups = {}
     for col_name in classifier_cols:
         base_name = (col_name
-                     .replace('_score', '')
+                     .replace('_score', '')   # used replace so that all the names are consistent
                      .replace('_pred', '')
                      .replace('_converted_rankscore', '')
                      .replace('_rankscore', ''))
@@ -142,7 +143,7 @@ def q2_top5_classifiers(classifier_cols, predictions_count):
 
     sorted_classifiers = sorted(
         classifier_totals.items(),
-        key=lambda x: x[1],
+        key=lambda x: x[1],   # as same as key=dictname.get()
         reverse=True
     )
     top5 = sorted_classifiers[:5]
@@ -155,14 +156,14 @@ def q2_top5_classifiers(classifier_cols, predictions_count):
 def filter_top5_cols(spark_df, top5, classifier_groups):
     """Keep only top 5 classifier columns."""
     top5_names = [name for name, _ in top5]
-    columns_to_keep = [
+    columns_to_keep = [   # These columns must be kept under all circumstances
         'chr', 'pos(1-based)', 'ref', 'alt', 'genename',
         'Ensembl_proteinid', 'Ensembl_geneid'
     ]
     for base_name in top5_names:
-        columns_to_keep.extend(classifier_groups[base_name])
+        columns_to_keep.extend(classifier_groups[base_name])   # extend in spark is like append in py
 
-    spark_df = spark_df.select(
+    spark_df = spark_df.select(   # rebuild the dataframe
         [c for c in spark_df.columns if c in columns_to_keep]
     )
     print(f"Kept {len(spark_df.columns)} columns", flush=True)
@@ -170,17 +171,17 @@ def filter_top5_cols(spark_df, top5, classifier_groups):
 
 
 def q3_q4_positions(spark_df):
-    """Q3-Q4: Create position ID and find top position."""
+    """Q3-Q4: Create position ID and find top position based on its redundancy."""
     print("\nQ3: Position identifiers", flush=True)
-    spark_df = spark_df.withColumn(
+    spark_df = spark_df.withColumn(   # withColumn:make a new column named anything(here is position_id)
         "position_id",
-        concat_ws(":", col("chr"), col("pos(1-based)"))
+        concat_ws(":", col("chr"), col("pos(1-based)"))   # concat 2 cols with ':' as new column values
     )
 
     print("\nQ4: Top position", flush=True)
     position_counts = (spark_df.groupBy("position_id").count()
-                       .orderBy("count", ascending=False))
-    top_position = position_counts.first()
+                       .orderBy("count", ascending=False))   #orderby in spark is as same as sort in py
+    top_position = position_counts.first()   # it returns the first row in spark like row[0]
     print(
         f"Position: {top_position['position_id']} "
         f"({top_position['count']})",
