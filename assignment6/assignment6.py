@@ -54,25 +54,14 @@ def init_spark():
 
 
 def load_data(spark):
-    '''instaed of reading the dataset by pandas and convert it to spark_df,
-    I read it by spark directly'''
-    print("\nRead the data...", flush=True)
-    file_path = (
-        '/data/datasets/dbNSFP/snpEff/data/dbNSFP4.9a.txt.gz'
-    )
-    spark_df = spark.read.csv(
+    file_path = "/data/datasets/dbNSFP/snpEff/data/dbNSFP4.9a.txt.gz.SMALL"
+    df = spark.read.csv(
         file_path,
-        sep='\t',
+        sep="\t",
         header=True,
         inferSchema=False
     )
-    spark_df = spark_df.limit(100)   # (optional):use limit instead of loading the whole dataset
-    print(
-        f"Loaded: {spark_df.count()} rows, "
-        f"{len(spark_df.columns)} columns",
-        flush=True
-    )
-    return spark_df
+    return df
 
 
 def apply_schema(spark_df):
