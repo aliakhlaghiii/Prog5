@@ -1,131 +1,85 @@
 #!/usr/bin/env python3
-"""
-Parallel numerical integration with the composite trapezoidal rule (mpi4py).
-
-Usage (example):
-  srun --ntasks=4 python3 assignment2.py -a 0 -b 1 -n 1000000
-"""
-
 import argparse as ap
-import math
 from mpi4py import MPI
 
 
-# ---------- 1) The pure (serial) math core ----------
-def f(x: float) -> float:
-    """Function to integrate. You can hardcode it for the assignment."""
-    return math.cos(x)
+# ---------------- 1) The pure (serial) core ----------------
+def summation_serial(a: int, b: int) -> int:
+    """Sum_{i=a}^{b-1} (i^2 + 1), b is exclusive."""
+    s = 0
+    for i in range(a, b):
+        s += i * i + 1
+    return s
 
 
-def trapezoid_serial(fn, a: float, b: float, n: int) -> float:
+# ---------------- 2) Split work across WORKERS ----------------
+def split_steps(a: int, b: int, workers: int, worker_id: int):
     """
-    Composite trapezoidal rule on [a,b] with n subintervals.
-
-    h = (b-a)/n
-    Integral ≈ h * ( 0.5*f(a) + f(a+h) + f(a+2h) + ... + f(b-h) + 0.5*f(b) )
+    Split [a,b) across 'workers' worker processes (NOT including rank0).
+    worker_id is in [0 .. workers-1].
+    Returns (start, end, local_n) with end exclusive.
     """
-    if n <= 0:
-        raise ValueError("n must be positive")
-    if a == b:
-        return 0.0
+    n = b - a
+    if n < 0:
+        raise ValueError("b must be >= a")
+    if workers <= 0:
+        return a, a, 0  # no work
 
-    h = (b - a) / n
-    s = 0.5 * fn(a) + 0.5 * fn(b)
+    base = n // workers
+    rem = n % workers
 
-    # add interior points: i = 1..n-1
-    for i in range(1, n):
-        x = a + i * h
-        s += fn(x)
-
-    return h * s
-
-
-# ---------- 2) MPI wrapper around the math core ----------
-def split_steps(n: int, size: int, rank: int):
-    """
-    Split n steps across 'size' ranks, handling remainder safely.
-
-    Returns:
-      start_step (inclusive), end_step (exclusive), local_n = end_step - start_step
-
-    We split subinterval indices [0..n-1] into chunks.
-    """
-    base = n // size
-    rem = n % size
-
-    # ranks < rem get one extra step
-    local_n = base + (1 if rank < rem else 0)
-
-    # starting index depends on how many extra steps were given to earlier ranks
-    start = rank * base + min(rank, rem)
+    local_n = base + (1 if worker_id < rem else 0)
+    start = a + worker_id * base + min(worker_id, rem)
     end = start + local_n
     return start, end, local_n
 
 
-def trapezoid_parallel(fn, a: float, b: float, n: int, comm: MPI.Comm) -> float:
+# ---------------- 3) MPI wrapper (parallel) ----------------
+def summation_parallel(a: int, b: int, comm: MPI.Comm):
     """
-    Parallel trapezoid: each rank integrates over its own sub-range.
-    Then we sum partial integrals with Reduce.
-
-    Key idea:
-      Each rank gets a contiguous block of steps (subintervals).
-      Convert that to a local [a_local, b_local] and local_n.
+    rank0 does no work, only reduces.
+    workers (rank>=1) compute partial sums and Reduce(SUM) to rank0.
     """
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    if n <= 0:
-        raise ValueError("n must be positive")
-    if a == b:
-        return 0.0
+    workers = size - 1
 
-    # global step size
-    h = (b - a) / n
+    if rank == 0:
+        local_sum = 0
+    else:
+        worker_id = rank - 1  # map ranks 1..size-1 -> worker ids 0..workers-1
+        start, end, _ = split_steps(a, b, workers, worker_id)
+        local_sum = summation_serial(start, end)
 
-    # decide which subintervals this rank owns
-    start_step, end_step, local_n = split_steps(n, size, rank)
-
-    # map owned subinterval indices to a local [a_local, b_local]
-    a_local = a + start_step * h
-    b_local = a + end_step * h
-
-    # compute local integral serially on local segment
-    local_I = trapezoid_serial(fn, a_local, b_local, local_n)
-
-    # sum all local integrals into rank 0
-    total_I = comm.reduce(local_I, op=MPI.SUM, root=0)
-    return total_I  # on non-root ranks, this is None
+    total_sum = comm.reduce(local_sum, op=MPI.SUM, root=0)
+    return total_sum  # only rank0 gets the number; others get None
 
 
-# ---------- 3) main: parse args, setup MPI, choose serial/parallel ----------
+# ---------------- 4) main ----------------
 def main():
-    parser = ap.ArgumentParser(description="MPI trapezoid integration")
-    parser.add_argument("-a", type=float, required=True, help="Lower bound")
-    parser.add_argument("-b", type=float, required=True, help="Upper bound")
-    parser.add_argument("-n", type=int, required=True, help="Number of steps")
+    parser = ap.ArgumentParser(description="MPI summation of (i^2 + 1) over [a, b)")
+    parser.add_argument("-a", type=int, required=True, help="start (inclusive)")
+    parser.add_argument("-b", type=int, required=True, help="end (exclusive)")
     args = parser.parse_args()
 
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    # (optional) ensure consistent timing start
     comm.Barrier()
     t0 = MPI.Wtime()
 
     if size == 1:
-        # pure serial run
-        result = trapezoid_serial(f, args.a, args.b, args.n)
+        result = summation_serial(args.a, args.b)
     else:
-        # parallel run
-        result = trapezoid_parallel(f, args.a, args.b, args.n, comm)
+        result = summation_parallel(args.a, args.b, comm)
 
     comm.Barrier()
     t1 = MPI.Wtime()
 
-    # only rank 0 prints final result + timing
     if rank == 0:
-        print(f"size={size} integral ≈ {result}")
+        print(f"size={size} sum={result}")
         print(f"elapsed_seconds={t1 - t0}")
 
 
