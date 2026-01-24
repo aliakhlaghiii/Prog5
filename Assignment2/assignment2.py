@@ -1,90 +1,132 @@
-#!/usr/bin/python3
-"""Trapezoidal integration of cos(x) with MPI (mpi4py).
+#!/usr/bin/env python3
+"""
+Parallel numerical integration with the composite trapezoidal rule (mpi4py).
 
-- Rank 0 parses CLI args and broadcasts (a, b, n) to all ranks.
-- Each rank computes its local contribution using the trapezoidal rule.
-- Results are reduced on rank 0 (MPI.SUM) and rank 0 reports accuracy.
-
-Usage:
-  mpirun -n <R> python3 script.py -a <lower> -b <upper> -n <steps>
+Usage (example):
+  srun --ntasks=4 python3 assignment2.py -a 0 -b 1 -n 1000000
 """
 
+import argparse as ap
 import math
-import argparse
 from mpi4py import MPI
 
 
+# ---------- 1) The pure (serial) math core ----------
+def f(x: float) -> float:
+    """Function to integrate. You can hardcode it for the assignment."""
+    return math.cos(x)
+
+
+def trapezoid_serial(fn, a: float, b: float, n: int) -> float:
+    """
+    Composite trapezoidal rule on [a,b] with n subintervals.
+
+    h = (b-a)/n
+    Integral ≈ h * ( 0.5*f(a) + f(a+h) + f(a+2h) + ... + f(b-h) + 0.5*f(b) )
+    """
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if a == b:
+        return 0.0
+
+    h = (b - a) / n
+    s = 0.5 * fn(a) + 0.5 * fn(b)
+
+    # add interior points: i = 1..n-1
+    for i in range(1, n):
+        x = a + i * h
+        s += fn(x)
+
+    return h * s
+
+
+# ---------- 2) MPI wrapper around the math core ----------
+def split_steps(n: int, size: int, rank: int):
+    """
+    Split n steps across 'size' ranks, handling remainder safely.
+
+    Returns:
+      start_step (inclusive), end_step (exclusive), local_n = end_step - start_step
+
+    We split subinterval indices [0..n-1] into chunks.
+    """
+    base = n // size
+    rem = n % size
+
+    # ranks < rem get one extra step
+    local_n = base + (1 if rank < rem else 0)
+
+    # starting index depends on how many extra steps were given to earlier ranks
+    start = rank * base + min(rank, rem)
+    end = start + local_n
+    return start, end, local_n
+
+
+def trapezoid_parallel(fn, a: float, b: float, n: int, comm: MPI.Comm) -> float:
+    """
+    Parallel trapezoid: each rank integrates over its own sub-range.
+    Then we sum partial integrals with Reduce.
+
+    Key idea:
+      Each rank gets a contiguous block of steps (subintervals).
+      Convert that to a local [a_local, b_local] and local_n.
+    """
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if a == b:
+        return 0.0
+
+    # global step size
+    h = (b - a) / n
+
+    # decide which subintervals this rank owns
+    start_step, end_step, local_n = split_steps(n, size, rank)
+
+    # map owned subinterval indices to a local [a_local, b_local]
+    a_local = a + start_step * h
+    b_local = a + end_step * h
+
+    # compute local integral serially on local segment
+    local_I = trapezoid_serial(fn, a_local, b_local, local_n)
+
+    # sum all local integrals into rank 0
+    total_I = comm.reduce(local_I, op=MPI.SUM, root=0)
+    return total_I  # on non-root ranks, this is None
+
+
+# ---------- 3) main: parse args, setup MPI, choose serial/parallel ----------
 def main():
-    """MPI setup, broadcast (a, b, n), split work, compute local sum,
-    reduce to rank 0, and print results."""
-    # mpi setup
-    comm = MPI.COMM_WORLD   # gather all the ranks in a communicator
-    rank = comm.Get_rank()  # id of this rank
-    size = comm.Get_size()  # total number of ranks (processes)
+    parser = ap.ArgumentParser(description="MPI trapezoid integration")
+    parser.add_argument("-a", type=float, required=True, help="Lower bound")
+    parser.add_argument("-b", type=float, required=True, help="Upper bound")
+    parser.add_argument("-n", type=int, required=True, help="Number of steps")
+    args = parser.parse_args()
 
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    # (optional) ensure consistent timing start
+    comm.Barrier()
+    t0 = MPI.Wtime()
+
+    if size == 1:
+        # pure serial run
+        result = trapezoid_serial(f, args.a, args.b, args.n)
+    else:
+        # parallel run
+        result = trapezoid_parallel(f, args.a, args.b, args.n, comm)
+
+    comm.Barrier()
+    t1 = MPI.Wtime()
+
+    # only rank 0 prints final result + timing
     if rank == 0:
-        # rank0 is in charge of control and broadcast
-        parser = argparse.ArgumentParser(description="Trapezoidal integration with MPI")
-        parser.add_argument("-a", "--lower", type=float, required=True,
-                            help="Lower bound of integration")
-        parser.add_argument("-b", "--upper", type=float, required=True,
-                            help="Upper bound of integration")
-        parser.add_argument("-n", "--steps", type=int, required=True,
-                            help="Number of steps in the trapezoidal rule")
-        args = parser.parse_args()
-
-        lower_bound, upper_bound, steps = args.lower, args.upper, args.steps
-        
-        if steps < 1:  # to provide a likely error for number of steps
-            raise ValueError("steps (-n) must be >= 1")
-
-    # rank0 broadcast the data and the other ranks return None
-    lower_bound, upper_bound, steps = comm.bcast((lower_bound, upper_bound, steps) if rank == 0 else None, root=0)
-
-    # split the number of steps for each rank
-    workers = size - 1    # size=33 but we need 32 workers
-    if workers <= 0:
-        if rank == 0:
-            print('need at least 2 ranks')
-        return
-
-    w = rank - 1
-    base = steps // workers  # minimum value of steps for each rank
-    r = steps % workers      # residual -> given to the first r ranks
-    local_steps = base + (1 if w < r else 0)   # adding residuals to n first ranks
-    i_start = w * base + min(rank, r)          # index of start for rank
-    i_end = i_start + local_steps              # index of end
-
-    # trapezoid rule
-    # recall: trapezoid rule = (h/2)*f(a + 2*sigma f(a+ih) + f(b))
-    h = (upper_bound - lower_bound) / steps
-    local_sum = 0.0   # initialize each local rank
-
-    for i in range(i_start + 1, i_end):   # without boundaries
-        x = lower_bound + i * h   # f(x) = f(a + ih)
-        local_sum += 2.0 * math.cos(x)
-
-    # include left chunk-boundary (internal) with weight=2, only if we have work
-    if local_steps > 0 and i_start > 0:
-        local_sum += 2.0 * math.cos(lower_bound + i_start * h)
-
-    # include global endpoints exactly once (only ranks touching them)
-    if local_steps > 0 and i_start == 0:
-        local_sum += math.cos(lower_bound)
-    if local_steps > 0 and i_end == steps:
-        local_sum += math.cos(upper_bound)
-
-    # call mpi.sum to sum(reduce) all the results from rank0
-    total_sum = comm.reduce(local_sum, op=MPI.SUM, root=0)
-
-    # rank0 has to report
-    if rank == 0:
-        approx = (h / 2.0) * total_sum
-        exact = math.sin(upper_bound) - math.sin(lower_bound)
-        error = abs(exact - approx)
-        print("Controller (rank 0):")
-        print(f"Ranks: {size}, Steps: {steps}")
-        print(f"Approx: {approx:.5f}, Exact: {exact:.5f}, Error: {error:.5e}")
+        print(f"size={size} integral ≈ {result}")
+        print(f"elapsed_seconds={t1 - t0}")
 
 
 if __name__ == "__main__":
