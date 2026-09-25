@@ -244,72 +244,36 @@ def insert_to_table(
         table2_df
     )
 
-
-
 def create_tables(conn):
 
     conn.execute(text("""
     CREATE TABLE IF NOT EXISTS genomes (
-
-        acce_ver VARCHAR(40) NOT NULL,
-
-        organism VARCHAR(255) NOT NULL,
-
-        genome_size BIGINT UNSIGNED NOT NULL,
-
-        gene_count INT UNSIGNED NOT NULL,
-
-        protein_count INT UNSIGNED NOT NULL,
-
-        taxon_id INT UNSIGNED NULL,
-
+        acce_ver TEXT NOT NULL,
+        organism TEXT NOT NULL,
+        genome_size INTEGER NOT NULL,
+        gene_count INTEGER NOT NULL,
+        protein_count INTEGER NOT NULL,
+        taxon_id INTEGER,
         PRIMARY KEY (acce_ver)
-
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    );
     """))
-
 
     conn.execute(text("""
     CREATE TABLE IF NOT EXISTS proteins (
-
-        prot_id VARCHAR(80) NOT NULL,
-
-        acce_ver VARCHAR(40) NOT NULL,
-
+        prot_id TEXT NOT NULL,
+        acce_ver TEXT NOT NULL,
         product TEXT,
-
-        locus_tag VARCHAR(80),
-
-        gene_ref VARCHAR(128),
-
-        loc_start INT UNSIGNED,
-
-        loc_end INT UNSIGNED,
-
-        strand ENUM('+','-'),
-
+        locus_tag TEXT,
+        gene_ref TEXT,
+        loc_start INTEGER,
+        loc_end INTEGER,
+        strand TEXT,
         ec TEXT,
-
         go_id TEXT,
-
         PRIMARY KEY (prot_id),
-
-        INDEX (acce_ver),
-
-        CONSTRAINT fk_proteins_genomes
-
-            FOREIGN KEY (acce_ver)
-
-            REFERENCES genomes(acce_ver)
-
-            ON DELETE CASCADE
-
-            ON UPDATE CASCADE
-
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        FOREIGN KEY (acce_ver) REFERENCES genomes(acce_ver)
+    );
     """))
-
-
 
 def query(conn):
 
