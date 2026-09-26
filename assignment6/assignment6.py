@@ -1,284 +1,247 @@
-#!/usr/bin/python3
-"""Process dbNSFP data using Spark and save to MariaDB."""
+#!/usr/bin/env python3
+"""Assignment 6: dbNSFP classifier counts and normalized MariaDB export.
 
-import sys
-import subprocess
-sys.path.append('/opt/spark/python')
-sys.path.append('/opt/spark/python/lib/py4j-0.10.9.7-src.zip')
+Edit the settings in main() for another CSV/TSV dataset or machine.
+A codebook containing metadata is consulted by the student, not joined as rows.
+"""
 
-from sqlalchemy import create_engine, text
+import configparser
+from functools import reduce
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (col, concat_ws,
-                                    monotonically_increasing_id)  
-from pyspark.sql.types import IntegerType, FloatType
+from pyspark.sql import functions as F
 
-# sql default setting
-def get_mysql_config(key):
-    """Get MySQL config value from .my.cnf."""
-    result = subprocess.run(
-        ['grep', f'^{key}', '/homes/aakhlaghi/.my.cnf'],
-        capture_output=True,
-        text=True,
-        check=False
+
+# Reusable exam functions ---------------------------------------------------
+def create_spark(app_name="PySpark", master=None, jdbc_jar=None):
+    builder = SparkSession.builder.appName(app_name)
+    if master:
+        builder = builder.master(master)
+    if jdbc_jar:
+        builder = builder.config("spark.jars", jdbc_jar)
+    return builder.getOrCreate()
+
+
+def read_data(spark, data_path, sep=",", header=True, infer_schema=False):
+    return (
+        spark.read.option("header", header)
+        .option("sep", sep)
+        .option("inferSchema", False)
+        .csv(data_path)
     )
-    if result.stdout:
-        return result.stdout.split('=')[1].strip()
-    return None
-
-# connect to data base
-def test_mysql():
-    """Test MySQL connection and return database name."""
-    print("Test MySQL connection...", flush=True)
-    engine = create_engine(
-        "mysql+mysqldb:///?read_default_file="
-        "/homes/aakhlaghi/.my.cnf"
-    )
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT DATABASE();"))
-        db_name = result.scalar()
-        print(f"Connected to: {db_name}", flush=True)
-        return db_name
-
-# spark default setting
-def init_spark():
-    """Initialize and return Spark session."""
-    print("\nInitialize Spark with JDBC driver", flush=True)
-    spark = (SparkSession.builder
-        .appName("assignment6_Ali")
-        .master("spark://spark.bin.bioinf.nl:7077")
-        .config("spark.jars",
-                "/usr/share/java/mariadb-java-client.jar")
-        .getOrCreate())
-    print(f"Spark: {spark.sparkContext.master}", flush=True)
-    return spark
 
 
-def load_data(spark):
-    file_path = "/data/datasets/dbNSFP/snpEff/data/dbNSFP4.9a.txt.gz.SMALL"
-    df = spark.read.csv(
-        file_path,
-        sep="\t",
-        header=True,
-        inferSchema=False
-    )
+def recasting(df, col_types, col_rename_map=None, verbose=False):
+    """Rename known columns, then cast requested columns; fail on collisions."""
+    applied = {}
+    for old, new in (col_rename_map or {}).items():
+        if old not in df.columns:
+            if verbose:
+                print(f"missing column for rename: {old}")
+            continue
+        if old != new:
+            if new in df.columns:
+                raise ValueError(f"Cannot rename {old} to existing column {new}")
+            df = df.withColumnRenamed(old, new)
+        applied[old] = new
+    for name, dtype in col_types.items():
+        name = applied.get(name, name)
+        if name not in df.columns:
+            if verbose:
+                print(f"missing column for cast: {name}")
+            continue
+        df = df.withColumn(name, F.col(name).cast(dtype))
     return df
 
 
-def apply_schema(spark_df):
-    """Cast columns to proper types to apply logic/mathematical works"""
-    print("\nApply schema transformations...", flush=True)
-    int_cols = [
-        "#chr", "pos(1-based)", "hg19_chr", "hg19_pos(1-based)",
-        "hg18_chr", "hg18_pos(1-based)", "aapos", "codonpos"
-    ]
-    for int_col in int_cols:
-        spark_df = spark_df.withColumn(
-            int_col,
-            col(int_col).cast(IntegerType())
-        )
-    # cast classifier scores columns
-    score_columns = [
-        c for c in spark_df.columns
-        if '_score' in c.lower() or '_rankscore' in c.lower()
-    ]
-    for score_col in score_columns:
-        spark_df = spark_df.withColumn(
-            score_col,
-            col(score_col).cast(FloatType())
-        )
-    print("Schema applied!", flush=True)
-    return spark_df
-
-# extract classifiers columns
-def get_classifier_cols(spark_df):
-    """Get all classifier column names."""
-    return [c for c in spark_df.columns if '_score' in c or '_pred' in c]
+def check_dataframe(df, n=5):
+    df.printSchema()
+    df.show(n, truncate=False)
 
 
-def q1_classifier_counts(spark_df, classifier_cols):
-    """Q1: Count predictions per classifier."""
-    print("\nQ1: Classifier counts", flush=True)
-    predictions_count = {}   #a dict to keep the classifier with its number of predictions
-    for col_name in classifier_cols:
-        count = spark_df.filter(   # number of predictions per classifier
-            col(col_name).isNotNull()   # we have to use not-null values since in codebook some columns have Nan
-        ).count()
-        predictions_count[col_name] = count   # allocate number of predictions to each classifier
-        print(f"{col_name}: {count}", flush=True)
-    return predictions_count
+def join_data(df1, df2, key, how="inner"):
+    """Use only for a second row-level dataset with a real shared key."""
+    return df1.join(df2, on=key, how=how)
 
 
-def q2_top5_classifiers(classifier_cols, predictions_count):
-    """Q2: Get top 5 classifiers and their columns to keep."""
-    print("\nQ2: Top 5 classifiers", flush=True)
-    classifier_groups = {}
-    for col_name in classifier_cols:
-        base_name = (col_name
-                     .replace('_score', '')   # used replace so that all the names are consistent
-                     .replace('_pred', '')
-                     .replace('_converted_rankscore', '')
-                     .replace('_rankscore', ''))
-        if base_name not in classifier_groups:
-            classifier_groups[base_name] = []
-        classifier_groups[base_name].append(col_name)
-
-    classifier_totals = {}
-    for base_name, cols in classifier_groups.items():
-        total = sum(
-            predictions_count.get(col_name, 0)
-            for col_name in cols
-        )
-        classifier_totals[base_name] = total
-
-    sorted_classifiers = sorted(
-        classifier_totals.items(),
-        key=lambda x: x[1],   # as same as key=dictname.get()
-        reverse=True
-    )
-    top5 = sorted_classifiers[:5]
-    for name, count in top5:
-        print(f"  {name}: {count}", flush=True)
-
-    return top5, classifier_groups
+# Assignment 6 queries ----------------------------------------------------
+CLASSIFIER_SUFFIXES = ("_converted_rankscore", "_rankscore", "_score", "_pred")
+MISSING_TEXT = ("", ".", "NA", "N/A", "null", "nan")
 
 
-def filter_top5_cols(spark_df, top5, classifier_groups):
-    """Keep only top 5 classifier columns."""
-    top5_names = [name for name, _ in top5]
-    columns_to_keep = [   # These columns must be kept under all circumstances
-        'chr', 'pos(1-based)', 'ref', 'alt', 'genename',
-        'Ensembl_proteinid', 'Ensembl_geneid'
-    ]
-    for base_name in top5_names:
-        columns_to_keep.extend(classifier_groups[base_name])   # extend in spark is like append in py
-
-    spark_df = spark_df.select(   # rebuild the dataframe
-        [c for c in spark_df.columns if c in columns_to_keep]
-    )
-    print(f"Kept {len(spark_df.columns)} columns", flush=True)
-    return spark_df
+def classifier_groups(df):
+    """Group exact classifier suffixes; do not treat rank scores as predictions."""
+    groups = {}
+    for name in df.columns:
+        suffix = next((s for s in CLASSIFIER_SUFFIXES if name.endswith(s)), None)
+        if suffix:
+            groups.setdefault(name[:-len(suffix)], []).append(name)
+    if not groups:
+        raise ValueError("No classifier columns found: inspect column names and suffixes")
+    return groups
 
 
-def q3_q4_positions(spark_df):
-    """Q3-Q4: Create position ID and find top position based on its redundancy."""
-    print("\nQ3: Position identifiers", flush=True)
-    spark_df = spark_df.withColumn(   # withColumn:make a new column named anything(here is position_id)
-        "position_id",
-        concat_ws(":", col("chr"), col("pos(1-based)"))   # concat 2 cols with ':' as new column values
-    )
-
-    print("\nQ4: Top position", flush=True)
-    position_counts = (spark_df.groupBy("position_id").count()
-                       .orderBy("count", ascending=False))   #orderby in spark is as same as sort in py
-    top_position = position_counts.first()   # it returns the first row in spark like row[0]
-    print(
-        f"Position: {top_position['position_id']} "
-        f"({top_position['count']})",
-        flush=True
-    )
-    return spark_df
+def is_prediction(name):
+    """A valid output is nonempty and not a documented missing marker."""
+    value = F.trim(F.col(name).cast("string"))
+    return F.col(name).isNotNull() & ~F.lower(value).isin(*[s.lower() for s in MISSING_TEXT])
 
 
-def q5_proteins(spark_df):
-    """Q5: Find protein with most predictions."""
-    print("\nQ5: Top protein", flush=True)
-    protein_counts = (spark_df.groupBy("Ensembl_proteinid")
-                      .count()
-                      .orderBy("count", ascending=False))
-    top_protein = protein_counts.first()
-    print(
-        f"Protein: {top_protein['Ensembl_proteinid']} "
-        f"({top_protein['count']})",
-        flush=True
+def prediction_flags(groups):
+    """One flag per classifier per row, even if it has score and pred columns."""
+    flags = {}
+    for classifier, columns in groups.items():
+        # Rank scores only order predictions; prefer pred, otherwise score.
+        candidates = [c for c in columns if c.endswith(("_pred", "_score"))]
+        if candidates:
+            flags[classifier] = F.when(
+                reduce(lambda a, b: a | b, [is_prediction(c) for c in candidates]),
+                1,
+            ).otherwise(0)
+    if not flags:
+        raise ValueError("No _pred or _score columns found for classifier counts")
+    return flags
+
+
+def q1_classifier_counts(df, flags):
+    counts = df.agg(*[F.sum(flag).alias(name) for name, flag in flags.items()]).first()
+    result = {name: int(counts[name] or 0) for name in flags}
+    for name, count in sorted(result.items()):
+        print(f"{name}: {count}")
+    return result
+
+
+def q2_top5_classifiers(df, groups, counts, keep_columns, n=5):
+    top = sorted(counts, key=lambda name: (-counts[name], name))[:n]
+    print("Top classifiers:", [(name, counts[name]) for name in top])
+    missing = [c for c in keep_columns if c not in df.columns]
+    if missing:
+        raise ValueError(f"Required columns missing: {missing}")
+    selected = keep_columns + [c for name in top for c in groups[name]]
+    return df.select(*dict.fromkeys(selected)), top
+
+
+def q3_position_id(df, chr_col, pos_col, result_col="position_id"):
+    """Use string chromosomes: X, Y and MT are valid chromosome labels."""
+    if result_col in df.columns:
+        raise ValueError(f"Column already exists: {result_col}")
+    return df.withColumn(
+        result_col,
+        F.when(
+            F.col(chr_col).isNotNull() & F.col(pos_col).isNotNull(),
+            F.concat_ws(":", F.col(chr_col), F.col(pos_col)),
+        ),
     )
 
 
-def normalize_3nf(spark_df):
-    """Normalize to 3NF: create genes and variants tables."""
-    print("\nNormalizing to 3NF...", flush=True)
-
-    genes_df = spark_df.select(
-        "Ensembl_geneid",
-        "genename",
-        "Ensembl_proteinid"
-    ).distinct()
-
-    genes_df = genes_df.withColumn(
-        "gene_id",
-        monotonically_increasing_id()
-    )
-    print(f"Genes: {genes_df.count()}", flush=True)
-
-    spark_df = spark_df.join(
-        genes_df.select("Ensembl_geneid", "gene_id"),
-        on="Ensembl_geneid",
-        how="left"
+def top_prediction_group(df, group_col, flags, n=1):
+    """Count available classifier outputs, not merely rows in a group."""
+    total = reduce(lambda a, b: a + b, flags.values())
+    return (
+        df.where(F.col(group_col).isNotNull())
+        .groupBy(group_col)
+        .agg(F.sum(total).alias("prediction_count"))
+        .orderBy(F.desc("prediction_count"), F.asc(group_col))
+        .limit(n)
     )
 
-    variants_df = spark_df.select(
-        "chr", "pos(1-based)", "ref", "alt", "position_id",
-        "gene_id",
-        *[c for c in spark_df.columns
-          if '_score' in c or '_pred' in c]
+
+def q4_position(df, flags):
+    result = top_prediction_group(df, "position_id", flags)
+    result.show(truncate=False)
+    return result
+
+
+def q5_proteins(df, flags):
+    result = top_prediction_group(df, "Ensembl_proteinid", flags)
+    result.show(truncate=False)
+    return result
+
+
+def normalize_3nf(df, selected_groups):
+    """Split positions, variants, genes, proteins and classifier results.
+
+    Assumes one atomic gene/protein identifier per cell. The variant key uses
+    chromosome, coordinate and alleles; genome assembly must be consistent.
+    """
+    classifier_cols = [c for cols in selected_groups.values() for c in cols]
+    df = df.withColumn(
+        "variant_id",
+        F.sha2(F.to_json(F.struct(
+            F.col("chr"), F.col("pos(1-based)"), F.col("ref"), F.col("alt")
+        )), 256),
     )
-    print(f"Variants: {variants_df.count()}", flush=True)
+    return {
+        "positions": df.select("position_id", "chr", "pos(1-based)").distinct(),
+        "variants": df.select("variant_id", "position_id", "ref", "alt").distinct(),
+        "genes": df.select("Ensembl_geneid", "genename").distinct(),
+        "proteins": df.select("Ensembl_proteinid", "Ensembl_geneid").distinct(),
+        "predictions": df.select("variant_id", "Ensembl_proteinid", *classifier_cols).distinct(),
+    }
 
-    return genes_df, variants_df
+
+def read_mysql_config(path):
+    """Read the [client] section of a MariaDB/MySQL defaults file."""
+    config = configparser.ConfigParser(interpolation=None)
+    if not config.read(path) or not config.has_section("client"):
+        raise ValueError(f"Missing [client] section in {path}")
+    section = config["client"]
+    return section["database"], section["user"], section["password"]
 
 
-def save_to_db(genes_df, variants_df, db_name):
-    """Save tables to MariaDB."""
-    print("\nSaving to database...", flush=True)
-    db_user = get_mysql_config('user')
-    db_password = get_mysql_config('password')
-    print(f"Using user: {db_user}", flush=True)
-
-    jdbc_url = (
-        f"jdbc:mariadb://mariadb.bin.bioinf.nl/{db_name}"
-    )
-
-    genes_df.write.format("jdbc") \
-        .option("driver", "org.mariadb.jdbc.Driver") \
-        .option("url", jdbc_url) \
-        .option("dbtable", "genes") \
-        .option("user", db_user) \
-        .option("password", db_password) \
-        .mode("overwrite") \
-        .save()
-
-    variants_df.write.format("jdbc") \
-        .option("driver", "org.mariadb.jdbc.Driver") \
-        .option("url", jdbc_url) \
-        .option("dbtable", "variants") \
-        .option("user", db_user) \
-        .option("password", db_password) \
-        .mode("overwrite") \
-        .save()
-
-    print('Saved successfully!', flush=True)
+def save_to_db(tables, jdbc_url, user, password, mode="overwrite"):
+    for name, table in tables.items():
+        (table.write.format("jdbc")
+         .option("driver", "org.mariadb.jdbc.Driver")
+         .option("url", jdbc_url)
+         .option("dbtable", name)
+         .option("user", user)
+         .option("password", password)
+         .mode(mode).save())
+        print(f"Saved {name}")
 
 
 def main():
-    """Main execution."""
-    db_name = test_mysql()
-    spark = init_spark()
+    data_path = "/data/datasets/dbNSFP/snpEff/data/dbNSFP4.9a.txt.gz.SMALL"
+    data_sep = "\t"
+    data_header = True
+    master = "spark://spark.bin.bioinf.nl:7077"
+    jdbc_jar = "/usr/share/java/mariadb-java-client.jar"
+    mysql_config = "/homes/aakhlaghi/.my.cnf"
+    jdbc_host = "mariadb.bin.bioinf.nl"
+    save_results = True 
 
-    spark_df = load_data(spark)
-    spark_df = apply_schema(spark_df)
+    # For another dataset, edit its column names/types here.
+    col_rename_map = {"#chr": "chr"}
+    col_types = {"pos(1-based)": "long"}  # Keep chromosome labels as strings.
+    keep_columns = [
+        "chr", "pos(1-based)", "ref", "alt", "genename",
+        "Ensembl_proteinid", "Ensembl_geneid",
+    ]
 
-    classifier_cols = get_classifier_cols(spark_df)
-    predictions_count = q1_classifier_counts(spark_df, classifier_cols)
+    spark = create_spark("assignment6_Ali", master, jdbc_jar)
+    try:
+        df = read_data(spark, data_path, sep=data_sep, header=data_header)
+        df = recasting(df, col_types, col_rename_map, verbose=True)
+        check_dataframe(df)
 
-    top5, classifier_groups = q2_top5_classifiers(
-        classifier_cols, predictions_count
-    )
-    spark_df = filter_top5_cols(spark_df, top5, classifier_groups)
+        groups = classifier_groups(df)
+        flags = prediction_flags(groups)
+        counts = q1_classifier_counts(df, flags)
+        df, top = q2_top5_classifiers(df, groups, counts, keep_columns)
+        selected_groups = {name: groups[name] for name in top}
+        selected_flags = prediction_flags(selected_groups)
 
-    spark_df = q3_q4_positions(spark_df)
-    q5_proteins(spark_df)
+        df = q3_position_id(df, "chr", "pos(1-based)")
+        q4_position(df, selected_flags)
+        q5_proteins(df, selected_flags)
 
-    genes_df, variants_df = normalize_3nf(spark_df)
-    save_to_db(genes_df, variants_df, db_name)
+        if save_results:
+            db_name, user, password = read_mysql_config(mysql_config)
+            tables = normalize_3nf(df, selected_groups)
+            save_to_db(tables, f"jdbc:mariadb://{jdbc_host}/{db_name}", user, password)
+    finally:
+        spark.stop()
 
 
 if __name__ == "__main__":
