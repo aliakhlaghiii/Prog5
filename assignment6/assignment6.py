@@ -233,7 +233,13 @@ def main():
         selected_flags = prediction_flags(selected_groups)
 
         df = q3_position_id(df, "chr", "pos(1-based)")
-        q4_position(df, selected_flags)
+        
+        # if I want to save answer of a query to file:
+        result4 = q4_position(df, selected_flags)
+
+        with open("assignment6_results.txt", "a", encoding="utf-8") as file:
+            file.write(f"Q4 - position with most predictions: {result4.first()}\n")
+
         q5_proteins(df, selected_flags)
 
         if save_results:
